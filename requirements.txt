@@ -1,0 +1,25 @@
+# FastAPI + Celery AIO Pool + MongoDB
+# Production-ready async task processing
+
+# Web Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Background Tasks
+celery[redis]>=5.3.0
+celery-aio-pool>=0.1.0rc8
+redis>=5.0.0
+
+# MongoDB (Async)
+beanie>=1.25.0
+motor>=3.3.0
+
+# HTTP Client (Async)
+httpx>=0.26.0
+
+# Data Validation
+pydantic>=2.6.0
+email-validator>=2.0.0
+
+# Utilities
+python-dotenv>=1.0.0
