@@ -2,45 +2,54 @@
 Celery tasks with MongoDB (Beanie) integration.
 
 Demonstrates async database operations within Celery tasks.
+
+Connection Architecture:
+========================
+Each Celery worker PROCESS has its own:
+- Python interpreter (forked)
+- asyncio event loop (managed by celery-aio-pool)  
+- Motor client with connection pool
+- ThreadPoolExecutor for CPU work
+
+When you call ensure_db(), it initializes the database
+connection for THIS process only. Other processes have
+their own connections.
 """
 import asyncio
 import concurrent.futures
 import time
+import os
 from datetime import datetime
 from typing import Any
 
 import httpx
 from app.celery_app import celery_app
+from app.database import ensure_db  # Import from database module
 
 
 # =============================================================================
-# THREAD EXECUTOR for CPU work
+# THREAD EXECUTOR for CPU work (per-process)
 # =============================================================================
 
+# Each forked process has its own executor (not shared)
 _thread_executor: concurrent.futures.ThreadPoolExecutor | None = None
 
 
 def get_thread_executor(max_workers: int = 8) -> concurrent.futures.ThreadPoolExecutor:
+    """
+    Get or create a ThreadPoolExecutor for this process.
+    
+    Each worker process has its own executor.
+    This is used to run CPU-bound work without blocking the event loop.
+    """
     global _thread_executor
     if _thread_executor is None:
-        _thread_executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        pid = os.getpid()
+        _thread_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix=f"cpu-worker-{pid}"
+        )
     return _thread_executor
-
-
-# =============================================================================
-# DATABASE INITIALIZATION FOR CELERY WORKERS
-# =============================================================================
-
-_db_initialized = False
-
-
-async def ensure_db():
-    """Ensure database is initialized for this worker."""
-    global _db_initialized
-    if not _db_initialized:
-        from app.database import get_db_for_celery
-        await get_db_for_celery()
-        _db_initialized = True
 
 
 # =============================================================================
