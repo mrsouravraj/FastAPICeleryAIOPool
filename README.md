@@ -1,9 +1,10 @@
-# FastAPI + Celery AIO Pool + MongoDB
+# FastAPI + Celery AIO Pool + MongoDB + Elasticsearch (Async)
 
 A production-ready example demonstrating how to handle **both CPU-heavy and I/O-heavy tasks** efficiently using:
 - **FastAPI** - Async REST API
 - **Celery + celery-aio-pool** - Async background task execution
 - **MongoDB + Beanie** - Async database operations
+- **Elasticsearch (AsyncElasticsearch)** - Async indexing & search operations
 - **Redis** - Message broker and result backend
 
 ## Performance Results
@@ -22,6 +23,7 @@ A production-ready example demonstrating how to handle **both CPU-heavy and I/O-
 - Python 3.10+
 - MongoDB (running on localhost:27017)
 - Redis (running on localhost:6379)
+- Elasticsearch (running on localhost:9200) *(optional, only for `/es/*` endpoints)*
 
 ### Installation
 
@@ -217,6 +219,47 @@ async def fetch_and_store(self, urls: list[str]) -> dict:
 | `/io/fetch` | POST | Fetch single URL |
 | `/io/fetch-multiple` | POST | Fetch multiple URLs concurrently |
 | `/io/sleep` | POST | Async sleep |
+
+### Elasticsearch (Async)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/es/health` | GET | Ping Elasticsearch from API process |
+| `/es/index` | POST | Index a single document via Celery |
+| `/es/bulk-index` | POST | Bulk index documents via Celery |
+| `/es/search` | POST | Search via Celery |
+
+## Elasticsearch Setup (Optional)
+
+### Option A: Docker Compose
+
+`docker-compose.yml` includes an `elasticsearch` service. Start it with:
+
+```bash
+docker-compose up -d elasticsearch
+```
+
+### Option B: Point to an existing cluster
+
+Set:
+
+```bash
+export ELASTICSEARCH_URL="http://localhost:9200"
+```
+
+If you use auth:
+
+```bash
+export ELASTICSEARCH_USERNAME="..."
+export ELASTICSEARCH_PASSWORD="..."
+```
+
+### Test Elasticsearch integration
+
+With API + worker running:
+
+```bash
+python test_elasticsearch.py
+```
 
 ### CPU Operations
 | Endpoint | Method | Description |

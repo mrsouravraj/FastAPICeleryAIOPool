@@ -8,6 +8,7 @@ from celery.result import AsyncResult
 
 from app.celery_app import celery_app
 from app.database import init_db, close_db
+from app.elasticsearch import init_es, close_es
 
 
 # =============================================================================
@@ -18,13 +19,16 @@ from app.database import init_db, close_db
 async def lifespan(app: FastAPI):
     """Initialize database on startup, close on shutdown."""
     await init_db()
+    # Elasticsearch is optional by default (won't block startup if not running).
+    await init_es(required=False)
     yield
+    await close_es()
     await close_db()
 
 
 app = FastAPI(
-    title="FastAPI + Celery AIO Pool + MongoDB",
-    description="Async Celery tasks with Beanie ODM for MongoDB",
+    title="FastAPI + Celery AIO Pool + MongoDB + Elasticsearch",
+    description="Async Celery tasks with MongoDB (Beanie) + Elasticsearch (async client)",
     version="3.0.0",
     lifespan=lifespan,
 )
@@ -83,6 +87,23 @@ class HybridRequest(BaseModel):
     process_iterations: int = 1_000_000
 
 
+class ElasticsearchIndexRequest(BaseModel):
+    index: str = "demo_docs"
+    doc_id: str | None = None
+    document: dict
+
+
+class ElasticsearchBulkIndexRequest(BaseModel):
+    index: str = "demo_docs"
+    documents: list[dict]
+
+
+class ElasticsearchSearchRequest(BaseModel):
+    index: str = "demo_docs"
+    query: dict
+    size: int = 10
+
+
 # =============================================================================
 # Response Models
 # =============================================================================
@@ -115,6 +136,7 @@ async def info():
         "version": "3.0.0",
         "features": {
             "mongodb": "Beanie ODM for async MongoDB operations",
+            "elasticsearch": "AsyncElasticsearch client for async search/indexing",
             "celery": "celery-aio-pool for async task execution",
             "patterns": [
                 "Concurrent HTTP requests within tasks",
@@ -127,6 +149,7 @@ async def info():
             "io": ["/io/fetch", "/io/fetch-multiple", "/io/sleep"],
             "cpu": ["/cpu/compute", "/cpu/compress"],
             "hybrid": ["/hybrid/fetch-process", "/hybrid/fetch-and-store"],
+            "elasticsearch": ["/es/health", "/es/index", "/es/bulk-index", "/es/search"],
         },
     }
 
@@ -296,6 +319,50 @@ async def revoke_task(task_id: str):
     """Cancel a task."""
     celery_app.control.revoke(task_id, terminate=True)
     return {"task_id": task_id, "status": "REVOKED"}
+
+
+# =============================================================================
+# Elasticsearch (Async) - via Celery tasks
+# =============================================================================
+
+@app.get("/es/health")
+async def elasticsearch_health():
+    """Direct ES ping from the API process (not Celery)."""
+    from app.elasticsearch import ensure_es, ELASTICSEARCH_URL
+
+    try:
+        es = await ensure_es()
+        ok = await es.ping()
+        return {"ok": bool(ok), "url": ELASTICSEARCH_URL}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Elasticsearch not reachable: {e}")
+
+
+@app.post("/es/index", response_model=TaskResponse)
+async def elasticsearch_index_document(request: ElasticsearchIndexRequest):
+    """Index a single document via Celery task."""
+    from app.tasks import es_index_document
+
+    task = es_index_document.delay(request.index, request.document, request.doc_id)
+    return TaskResponse(task_id=task.id, status="PENDING", task_type="elasticsearch")
+
+
+@app.post("/es/bulk-index", response_model=TaskResponse)
+async def elasticsearch_bulk_index(request: ElasticsearchBulkIndexRequest):
+    """Bulk index documents concurrently within one Celery task."""
+    from app.tasks import es_bulk_index
+
+    task = es_bulk_index.delay(request.index, request.documents)
+    return TaskResponse(task_id=task.id, status="PENDING", task_type="elasticsearch")
+
+
+@app.post("/es/search", response_model=TaskResponse)
+async def elasticsearch_search(request: ElasticsearchSearchRequest):
+    """Search via Celery task."""
+    from app.tasks import es_search
+
+    task = es_search.delay(request.index, request.query, request.size)
+    return TaskResponse(task_id=task.id, status="PENDING", task_type="elasticsearch")
 
 
 # =============================================================================

@@ -529,3 +529,121 @@ def sync_task(self, message: str) -> dict:
         "task_id": self.request.id,
         "message": f"Processed: {message}",
     }
+
+
+# =============================================================================
+# ELASTICSEARCH (Async) TASKS
+# =============================================================================
+
+@celery_app.task(bind=True, name="tasks.es.ping")
+async def es_ping(self) -> dict:
+    """Ping Elasticsearch from a Celery worker process."""
+    from app.elasticsearch import ensure_es, ELASTICSEARCH_URL
+
+    start = time.time()
+    es = await ensure_es()
+    ok = await es.ping()
+    return {
+        "task_id": self.request.id,
+        "ok": bool(ok),
+        "url": ELASTICSEARCH_URL,
+        "elapsed_seconds": time.time() - start,
+    }
+
+
+@celery_app.task(bind=True, name="tasks.es.index_document")
+async def es_index_document(self, index: str, document: dict, doc_id: str | None = None) -> dict:
+    """
+    Index a single document.
+
+    Notes:
+    - Uses refresh='wait_for' so a subsequent search can see the doc quickly.
+    """
+    from app.elasticsearch import ensure_es
+
+    start = time.time()
+    es = await ensure_es()
+    # ES 7.x uses body=, ES 8.x uses document=
+    resp = await es.index(index=index, id=doc_id, body=document, refresh="wait_for")
+    return {
+        "task_id": self.request.id,
+        "index": index,
+        "id": resp.get("_id"),
+        "result": resp.get("result"),
+        "version": resp.get("_version"),
+        "elapsed_seconds": time.time() - start,
+    }
+
+
+@celery_app.task(bind=True, name="tasks.es.bulk_index")
+async def es_bulk_index(self, index: str, documents: list[dict]) -> dict:
+    """
+    Bulk index documents.
+
+    Uses Elasticsearch bulk API. Good for large batches.
+    Compatible with ES 7.x client (uses body= param).
+    """
+    from app.elasticsearch import ensure_es
+
+    start = time.time()
+    es = await ensure_es()
+
+    # Build bulk body: action line + source line repeated (NDJSON style).
+    bulk_body: list[dict] = []
+    for doc in documents:
+        bulk_body.append({"index": {"_index": index}})
+        bulk_body.append(doc)
+
+    # ES 7.x uses body=, ES 8.x uses operations=
+    resp = await es.bulk(body=bulk_body, refresh="wait_for")
+    errors = bool(resp.get("errors"))
+    items = resp.get("items", [])
+
+    indexed = 0
+    failed = 0
+    if items:
+        for item in items:
+            op = item.get("index") or item.get("create") or item.get("update") or item.get("delete")
+            if not op:
+                continue
+            status = op.get("status", 0)
+            if 200 <= status < 300:
+                indexed += 1
+            else:
+                failed += 1
+
+    return {
+        "task_id": self.request.id,
+        "index": index,
+        "requested": len(documents),
+        "indexed": indexed,
+        "failed": failed,
+        "errors": errors,
+        "elapsed_seconds": time.time() - start,
+    }
+
+
+@celery_app.task(bind=True, name="tasks.es.search")
+async def es_search(self, index: str, query: dict, size: int = 10) -> dict:
+    """Search in an index and return top hits (ES 7.x compatible)."""
+    from app.elasticsearch import ensure_es
+
+    start = time.time()
+    es = await ensure_es()
+    # ES 7.x uses body={"query": ...}, ES 8.x uses query= directly
+    resp = await es.search(index=index, body={"query": query, "size": size})
+    hits = (resp.get("hits") or {}).get("hits") or []
+    return {
+        "task_id": self.request.id,
+        "index": index,
+        "count": len(hits),
+        "hits": [
+            {
+                "id": h.get("_id"),
+                "score": h.get("_score"),
+                "source": h.get("_source"),
+            }
+            for h in hits
+        ],
+        "elapsed_seconds": time.time() - start,
+    }
